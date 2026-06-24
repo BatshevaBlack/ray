@@ -664,7 +664,8 @@ class RDTManager:
             # 2. object is sent back to its source actor.
             # 3. object is also sent to at least one other actor
             if (
-                not rdt_meta.sent_to_src_actor_and_others_warned
+                src_actor is not None
+                and not rdt_meta.sent_to_src_actor_and_others_warned
                 and src_actor._actor_id in rdt_meta.sent_dest_actors
                 and len(rdt_meta.sent_dest_actors) > 1
             ):
@@ -680,7 +681,7 @@ class RDTManager:
                     sent_to_src_actor_and_others_warned=True
                 )
 
-            if src_actor._actor_id == dst_actor._actor_id:
+            if src_actor is not None and src_actor._actor_id == dst_actor._actor_id:
                 # If the source and destination actors are the same, the tensors can
                 # be transferred intra-process, so we skip the out-of-band tensor
                 # transfer.
@@ -904,6 +905,14 @@ class RDTManager:
         src_actor = rdt_meta.src_actor
         tensor_transport_backend = rdt_meta.tensor_transport_backend
         tensor_transport_meta = rdt_meta.tensor_transport_meta
+
+        if src_actor is None:
+            # Driver-put object: the primary copy lives in the driver's own
+            # RDT store. __ray_free__ only uses global_worker internals, so it
+            # can be invoked directly in-process.
+            __ray_free__(None, object_id, tensor_transport_backend, tensor_transport_meta)
+            return
+
         src_actor.__ray_call__.options(concurrency_group="_ray_system").remote(
             __ray_free__,
             object_id,
@@ -946,7 +955,20 @@ class RDTManager:
             tensor_transport: The tensor transport backend to use.
             tensors: The tensors to put into the RDT manager.
         """
-        src_actor = ray.get_runtime_context().current_actor
+        try:
+            src_actor = ray.get_runtime_context().current_actor
+        except RuntimeError:
+            src_actor = None
+        if src_actor is None:
+            from ray.experimental.rdt.util import (
+                is_one_sided_transport,
+            )
+
+            if not is_one_sided_transport(tensor_transport):
+                raise RuntimeError(
+                    f"ray.put() with tensor_transport={tensor_transport!r} requires an actor context. "
+                    "Call ray.put() from inside a Ray actor, or use a one-sided transport such as NIXL."
+                )
         tensor_transport_meta = self.rdt_store.add_object_primary(
             obj_ref.hex(), tensors, tensor_transport
         )
