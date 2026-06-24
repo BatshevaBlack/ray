@@ -25,10 +25,7 @@ class GPUTestActor:
         return data.sum().item()
 
     def produce(self, tensors):
-        refs = []
-        for t in tensors:
-            refs.append(ray.put(t, _tensor_transport="nixl"))
-        return refs
+        return ray.put(tensors, _tensor_transport="nixl")
 
     def consume_with_nixl(self, refs):
         tensors = [ray.get(ref) for ref in refs]
@@ -104,6 +101,8 @@ class GPUTestActor:
         # hence this call would fail without proper deduplication.
         ref2 = ray.put(list2, _tensor_transport="nixl")
 
+        assert len(ref1) == len(list1)
+        assert len(ref2) == len(list2)
         return ref1, ref2
 
     @ray.method(concurrency_group="_ray_system")
@@ -546,8 +545,9 @@ def test_nixl_get_into_tensor_buffers(ray_start_regular):
             return ray.put(self.tensor_list, _tensor_transport="nixl")
 
         def get_with_buffers(self, refs):
-            set_target_for_ref(refs[0], self.tensor_list)
-            tensors = ray.get(refs[0])
+            for ref, tensor_buffer in zip(refs, self.tensor_list):
+                set_target_for_ref(ref, [tensor_buffer])
+            tensors = ray.get(refs)
             # Make sure we ray.get-ted into the buffers
             for new_tensor, tensor_buffer in zip(tensors, self.tensor_list):
                 assert id(new_tensor) == id(tensor_buffer)
@@ -558,18 +558,18 @@ def test_nixl_get_into_tensor_buffers(ray_start_regular):
                 torch.tensor([1, 2]).to("cuda"),
                 torch.tensor([4, 5]).to("cuda"),
             ]
-            set_target_for_ref(refs[0], wrong_tensor_buffer)
+            set_target_for_ref(refs[0], [wrong_tensor_buffer[0]])
             with pytest.raises(ValueError) as excinfo:
                 ray.get(refs[0])
             assert "Shape of tensor_buffer at index 0" in str(excinfo.value)
             return True
 
     actors = [GPUTestActor.remote() for _ in range(2)]
-    ref = ray.get(actors[0].get_ref.remote())
-    result = actors[1].get_with_buffers.remote([ref])
+    refs = ray.get(actors[0].get_ref.remote())
+    result = actors[1].get_with_buffers.remote(refs)
     assert ray.get(result)
 
-    result = actors[1].get_with_wrong_buffers.remote([ref])
+    result = actors[1].get_with_wrong_buffers.remote(refs)
     assert ray.get(result)
 
 

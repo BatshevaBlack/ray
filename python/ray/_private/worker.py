@@ -3014,7 +3014,7 @@ def put(
     *,
     _owner: Optional["ray.actor.ActorHandle"] = None,
     _tensor_transport: Optional[str] = None,
-) -> "ray.ObjectRef[R]":
+) -> Union["ray.ObjectRef[R]", List["ray.ObjectRef"]]:
     """Store an object in the object store.
 
     The object may not be evicted while a reference to the returned ID exists.
@@ -3031,9 +3031,12 @@ def put(
         _tensor_transport: [Alpha] The tensor transport to use for the GPU object.
             Currently, this only supports one-sided tensor transports such as "nixl".
             When this is None (default), Ray will use the object store.
+            When this is set and ``value`` is a list, each list element is stored
+            as its own RDT object and a list of object refs is returned.
 
     Returns:
-        The object ref assigned to this value.
+        The object ref assigned to this value, or a list of object refs when
+        ``_tensor_transport`` is set and ``value`` is a list.
     """
     if _owner is not None:
         raise ValueError(
@@ -3046,6 +3049,15 @@ def put(
 
     with profiling.profile("ray.put"):
         try:
+            if _tensor_transport is not None and isinstance(value, list):
+                return [
+                    worker.put_object(
+                        item,
+                        _tensor_transport=_tensor_transport,
+                    )
+                    for item in value
+                ]
+
             object_ref = worker.put_object(
                 value,
                 _tensor_transport=_tensor_transport,
