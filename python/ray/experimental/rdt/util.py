@@ -338,11 +338,12 @@ def register_nixl_memory_pool(size: int, device: "torch.device") -> None:
 
 def create_empty_tensors_from_metadata(
     tensor_transport_meta: TensorTransportMetadata,
+    override_device: Optional["torch.device"] = None,
 ) -> List["torch.Tensor"]:
     import torch
 
     tensors = []
-    device = tensor_transport_meta.tensor_device
+    device = override_device if override_device is not None else tensor_transport_meta.tensor_device
     for meta in tensor_transport_meta.tensor_meta:
         shape, dtype = meta
         tensor = torch.empty(shape, dtype=dtype, device=device)

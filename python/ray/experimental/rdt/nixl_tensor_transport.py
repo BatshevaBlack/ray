@@ -302,9 +302,19 @@ class NixlTensorTransport(TensorTransportManager):
             create_empty_tensors_from_metadata,
         )
 
-        tensors = target_buffers or create_empty_tensors_from_metadata(
-            tensor_transport_metadata
-        )
+        if target_buffers is not None:
+            tensors = target_buffers
+        else:
+            import torch
+
+            override_device = (
+                torch.device("cuda", torch.cuda.current_device())
+                if torch.cuda.is_available()
+                else None
+            )
+            tensors = create_empty_tensors_from_metadata(
+                tensor_transport_metadata, override_device=override_device
+            )
 
         assert isinstance(tensor_transport_metadata, NixlTransportMetadata)
         assert isinstance(communicator_metadata, NixlCommunicatorMetadata)
