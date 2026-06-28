@@ -1,4 +1,5 @@
 import logging
+import math
 import threading
 import time
 import traceback
@@ -79,6 +80,10 @@ class NixlFetchRequest(FetchRequest):
     remote_name: Optional[str] = None
     remove_tensor_descs: bool = False
     transport: Any = None
+    # Set when target_buffers were provided (flat oversized buffers). Carries the
+    # source tensor shapes so wait_fetch_complete can slice+reshape each buffer
+    # to the actual transfer shape before returning. None on the normal path.
+    tensor_meta: Any = None
 
     def __del__(self):
         if self.transport is not None:
@@ -339,7 +344,19 @@ class NixlTensorTransport(TensorTransportManager):
             # This creates a placeholder for the tensor in the tensor_desc_cache even though it doesn't have an object ref for caching purposes.
             self._add_tensor_descs(tensors)
             added_tensor_descs = True
-            local_xfer_descs = nixl_agent.get_xfer_descs(tensors)
+            if target_buffers is not None:
+                # target_buffers are flat oversized byte pools. Build local xfer_descs
+                # from sliced views matching the source shape so NIXL sees equal sizes
+                # on both sides. The full buffer registration covers the sub-region.
+                sliced = [
+                    t.view(-1)[: math.prod(shape)]
+                    for t, (shape, _) in zip(
+                        tensors, tensor_transport_metadata.tensor_meta
+                    )
+                ]
+                local_xfer_descs = nixl_agent.get_xfer_descs(sliced)
+            else:
+                local_xfer_descs = nixl_agent.get_xfer_descs(tensors)
 
             remote_name = tensor_transport_metadata.nixl_agent_name
             remote_agent_meta_version = (
@@ -384,6 +401,11 @@ class NixlTensorTransport(TensorTransportManager):
                 remote_name=remote_name,
                 remove_tensor_descs=added_tensor_descs,
                 transport=self,
+                tensor_meta=(
+                    tensor_transport_metadata.tensor_meta
+                    if target_buffers is not None
+                    else None
+                ),
             )
         except Exception:
             self._cleanup_transfer(
@@ -445,6 +467,15 @@ class NixlTensorTransport(TensorTransportManager):
                 elif state == "DONE":
                     break
 
+            if fetch_request.tensor_meta is not None:
+                # Flat oversized buffers were used. Slice+reshape each buffer to
+                # the actual source shape before handing tensors back to the caller.
+                return [
+                    t.view(-1)[: math.prod(shape)].view(shape)
+                    for t, (shape, _) in zip(
+                        fetch_request.tensors, fetch_request.tensor_meta
+                    )
+                ]
             return fetch_request.tensors
         except TimeoutError:
             raise

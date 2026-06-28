@@ -1,3 +1,4 @@
+import math
 import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -54,13 +55,15 @@ def validate_tensor_buffers(
 
     for idx, single_buffer in enumerate(tensor_buffers):
         shape, dtype = tensor_meta[idx]
-        if single_buffer.shape != shape:
-            raise ValueError(
-                tensor_buffer_mismatch_msg("Shape", idx, single_buffer.shape, shape)
-            )
         if single_buffer.dtype != dtype:
             raise ValueError(
                 tensor_buffer_mismatch_msg("Dtype", idx, single_buffer.dtype, dtype)
+            )
+        required_nbytes = math.prod(shape) * single_buffer.element_size()
+        if single_buffer.nbytes < required_nbytes:
+            raise ValueError(
+                f"Buffer at index {idx} too small: buffer has {single_buffer.nbytes} bytes "
+                f"but incoming tensor shape {tuple(shape)} requires {required_nbytes} bytes."
             )
         if single_buffer.device.type != device:
             raise ValueError(
